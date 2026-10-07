@@ -1,4 +1,7 @@
 public/
+reports/
+.tools/
+.ruff_cache/
 __pycache__/
 *.py[cod]
 .venv/

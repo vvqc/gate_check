@@ -3,27 +3,49 @@ name: VPN Gate Node Check
 on:
   workflow_dispatch:
   schedule:
-    - cron: '0 */2 * * *'
+    - cron: '17 */2 * * *'
 
 permissions:
   contents: read
+  actions: read
+  pages: write
+  id-token: write
 
 concurrency:
   group: gate-check-pages
   cancel-in-progress: false
 
 jobs:
-  build:
+  check:
+    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    env:
+      CHECK_CONCURRENCY: ${{ vars.CHECK_CONCURRENCY }}
+      CONNECT_TIMEOUT: ${{ vars.CONNECT_TIMEOUT }}
+      CHECK_TIMEOUT: ${{ vars.CHECK_TIMEOUT }}
+      HTTP_TIMEOUT: ${{ vars.HTTP_TIMEOUT }}
+      CHECK_RETRIES: ${{ vars.CHECK_RETRIES }}
+      RETRY_BACKOFF: ${{ vars.RETRY_BACKOFF }}
+      RUN_TIMEOUT: ${{ vars.RUN_TIMEOUT }}
+      MAX_CHECK_NODES: ${{ vars.MAX_CHECK_NODES }}
+      ALLOWED_COUNTRIES: ${{ vars.ALLOWED_COUNTRIES }}
+      RESIDENTIAL_ONLY: ${{ vars.RESIDENTIAL_ONLY }}
+      MAX_LATENCY_MS: ${{ vars.MAX_LATENCY_MS }}
+      MAX_PER_COUNTRY: ${{ vars.MAX_PER_COUNTRY }}
+      PROBE_EDGES: ${{ vars.PROBE_EDGES }}
+      STALE_HOURS: ${{ vars.STALE_HOURS }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
 
       - name: Setup Python
-        uses: actions/setup-python@v7
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: '3.11'
           cache: pip
@@ -31,35 +53,67 @@ jobs:
       - name: Install dependencies
         run: python -m pip install -r requirements.txt
 
+      - name: Restore previous run state
+        run: python gate_delivery.py history
+        env:
+          GH_TOKEN: ${{ github.token }}
+
       - name: Run offline tests
         run: python -m unittest discover -s tests -v
 
       - name: Check nodes and generate nodes.txt
+        id: check
         run: python vpngate.py
         env:
           EDGE_HOSTS: ${{ secrets.EDGE_HOSTS }}
           WORKER_DOMAIN: ${{ secrets.WORKER_DOMAIN }}
           NODES_GITHUB_USERNAME: ${{ secrets.NODES_GITHUB_USERNAME }}
 
-      - name: Upload nodes for Pages
-        uses: actions/upload-pages-artifact@v4
+      - name: Configure Pages
+        id: pages
+        uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5
+
+      - name: Compare with published nodes.txt
+        id: compare
+        run: python gate_delivery.py compare
+        env:
+          PAGES_BASE_URL: ${{ steps.pages.outputs.base_url }}
+
+      - name: Upload changed nodes for Pages
+        if: steps.compare.outputs.changed == 'true'
+        uses: actions/upload-pages-artifact@7b1f4a764d45c48632c6b24a0339c27f5614fb0b # v4
         with:
           path: public
 
-  deploy:
-    needs: build
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    permissions:
-      pages: write
-      id-token: write
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    steps:
-      - name: Configure Pages
-        uses: actions/configure-pages@v5
-
-      - name: Deploy nodes.txt
+      - name: Deploy changed nodes.txt
+        if: steps.compare.outputs.changed == 'true'
         id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4
+
+      - name: Verify published content
+        if: steps.compare.outputs.changed == 'true'
+        id: verify
+        run: python gate_delivery.py verify
+        env:
+          PAGES_BASE_URL: ${{ steps.pages.outputs.base_url }}
+
+      - name: Summarize run and preserve history
+        if: always()
+        run: python gate_delivery.py finalize
+        env:
+          CHECK_OUTCOME: ${{ steps.check.outcome }}
+          PAGES_OUTCOME: ${{ steps.pages.outcome }}
+          COMPARE_OUTCOME: ${{ steps.compare.outcome }}
+          DEPLOY_OUTCOME: ${{ steps.deployment.outcome }}
+          VERIFY_OUTCOME: ${{ steps.verify.outcome }}
+
+      - name: Save diagnostic report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: gate-report-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            reports/run.json
+            reports/summary.md
+          if-no-files-found: warn
+          retention-days: 90

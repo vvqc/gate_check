@@ -12,20 +12,41 @@ jobs:
   test:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    strategy:
+      matrix:
+        python: ['3.11', '3.14']
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
-
       - name: Setup Python
-        uses: actions/setup-python@v7
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
-          python-version: '3.11'
+          python-version: ${{ matrix.python }}
           cache: pip
-
       - name: Install dependencies
-        run: python -m pip install -r requirements.txt
-
+        run: python -m pip install -r requirements-dev.txt
+      - name: Check Python style
+        run: |
+          ruff check .
+          ruff format --check .
       - name: Run offline tests
         run: python -m unittest discover -s tests -v
+
+  workflows:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Setup Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: '3.11'
+      - name: Install actionlint
+        run: python scripts/install_actionlint.py
+      - name: Check workflow syntax
+        run: .tools/actionlint -color
