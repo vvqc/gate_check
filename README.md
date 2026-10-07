@@ -1,154 +1,170 @@
 # gate_check
 
-参考 [hezhanleiok/gate](https://github.com/hezhanleiok/gate) 的 VPN Gate SSTP 节点检测项目：自动抓取节点，通过你部署的 Cloudflare Worker 检测，生成供 edgetunnel 使用的 `nodes.txt`，并发布到 GitHub Pages。
+在 **GitHub Actions** 上抓取 VPN Gate 节点，通过你自己的 Cloudflare Worker 检测 SSTP 可用性，再把清单发布到 GitHub Pages，供 edgetunnel 订阅。
 
-入口、Worker 域名等个人配置放在 **GitHub Actions Secrets** 中，不需要修改 Python 或工作流。可选运行参数通过 **Actions Variables** 调整。公开站点只发布节点清单，没有展示网页或 `data.json`；诊断报告保存在 Actions 产物中。
-
-## 工作流程
+只需要配置入口列表和检测 Worker 域名。本地不安装依赖、不运行检测；公开站点只有 `nodes.txt`，运行报告留在 Actions 中。
 
 ```text
-VPN Gate 官方 API（失败时回退 GitHub 镜像）
-  → 筛选 TCP 节点 → 去重 → Worker 并发检测
-  → 按国家、住宅／机房、延迟排序 → nodes.txt → GitHub Pages
+VPN Gate 数据源 → 解析 TCP 候选并去重 → Worker 检测 → 筛选可用节点
+                                                        ↓
+你的 EDGE_HOSTS ────────────────────────────────→ nodes.txt → GitHub Pages
 ```
 
-每 2 小时的第 17 分钟触发一次（UTC 00:17、02:17、04:17 等），避开整点高峰，也可手动运行。GitHub 定时任务可能延迟，不保证精确到点更新。默认并发 32、连接超时 10 秒、读取超时 90 秒；临时故障最多重试 2 次，整轮检测的总时间预算为 900 秒。
-
-## 部署
+## 快速部署
 
 ### 1. 准备检测 Worker
 
-先按 [cm-Workers-CheckSocks5](https://github.com/lsh8848/cm-Workers-CheckSocks5) 的说明部署检测 Worker，确认支持 `/check?sstp=vpn:vpn@节点:端口`，响应中包含布尔类型的 `success`。
+先部署 [cm-Workers-CheckSocks5](https://github.com/lsh8848/cm-Workers-CheckSocks5)，确认它支持 `/check?sstp=vpn:vpn@主机:端口`，并返回包含布尔字段 `success` 的 JSON。
 
-记下检测 Worker 的域名，例如 `check.example.com` 或 `my-check.example.workers.dev`。这里使用的是**检测 Worker 域名**。edgetunnel 的 UUID、管理员密码和节点域名仍在 edgetunnel 自己的后台配置。
+记下**检测 Worker** 的域名，例如 `check.example.com`。edgetunnel 的节点域名、UUID、管理员密码是另一套配置，仍在 edgetunnel 后台管理。
 
-### 2. 配置仓库 Secrets
+### 2. 填写仓库 Secrets
 
-Fork 本仓库或将代码推送到自己的仓库，进入：
+Fork 本仓库，进入 **Settings → Secrets and variables → Actions → Secrets → New repository secret**：
 
-**Settings → Secrets and variables → Actions → Secrets → New repository secret**
+| Secret | 是否必填 | 填什么 |
+| --- | --- | --- |
+| `EDGE_HOSTS` | 必填 | 你实测可用的入口，例如 `a.example.com:443,b.example.com:443`；支持逗号或换行分隔，每项必须带端口 |
+| `WORKER_DOMAIN` | 必填 | 仅检测 Worker 域名，例如 `check.example.com`；不要加 `https://`、路径、端口或查询参数 |
+| `NODES_GITHUB_USERNAME` | 通常不用填 | 默认采用当前仓库所有者；需要覆盖时只填 GitHub 用户名或组织名 |
 
-| Secret 名称 | 必填 | 内容示例 | 说明 |
-| --- | --- | --- | --- |
-| `EDGE_HOSTS` | 是 | `a.example.com:443,b.example.com:443` | 填写你实测可用的入口地址，逗号或换行分隔；必须带端口 |
-| `WORKER_DOMAIN` | 是 | `check.example.com` | 只填域名，不带 `https://`、端口、斜杠或检测路径 |
-| `NODES_GITHUB_USERNAME` | 否 | `your-name` | 只填 GitHub 用户名或组织名；不填则自动使用当前仓库所有者 |
+上面的地址都是格式示例，请替换成自己的值。入口也支持 IPv4 和带方括号的 IPv6，例如 `192.0.2.1:443`、`[2001:db8::1]:443`。程序会清理空白、统一格式并按原顺序去重。
 
-示例地址仅用于说明格式，请替换为自己的值。`EDGE_HOSTS` 也支持 IPv4 和带方括号的 IPv6，例如 `192.0.2.1:443`、`[2001:db8::1]:443`。空白会被清理，重复入口会按首次出现的顺序去重。
-
-程序自动拼接以下地址：
+完整地址由程序拼接：
 
 ```text
-检测地址：https://<WORKER_DOMAIN>/check?sstp=vpn:vpn@
-清单地址：https://<用户名>.github.io/<当前仓库名>/nodes.txt
+Worker：https://<WORKER_DOMAIN>/check?sstp=vpn:vpn@
+清单：  https://<仓库所有者>.github.io/<仓库名>/nodes.txt
 ```
 
-通常只需填写前两个 Secrets。用户名覆盖只改变生成的订阅地址提示，不会把 Pages 部署到另一个账号，因此应与实际 Pages 所属账号一致。仓库名由 Actions 自动提供，无需配置。
+`NODES_GITHUB_USERNAME` 只影响程序提示的清单地址，不会把 Pages 部署到另一个账号。通常保留默认值即可，仓库名无需配置。本项目的配置方式按标准 GitHub 项目 Pages 地址设计。
 
-本项目使用标准的 GitHub 项目 Pages 地址，不支持通过以上配置指定自定义 Pages 域名。Secrets 保存配置，但发布的 `nodes.txt` 是公开文件，其中入口地址和 SSTP 节点地址也会公开；检测 Worker 地址不会写入清单或日志。
-
-### 可选：运行参数与筛选
-
-进入 **Settings → Secrets and variables → Actions → Variables** 添加以下变量。全部可省略或留空，程序会使用默认值；三个核心配置仍使用 Secrets。
-
-| Variable | 默认值 | 范围与作用 |
-| --- | --- | --- |
-| `CHECK_CONCURRENCY` | `32` | 1–64，并发检测数 |
-| `CONNECT_TIMEOUT` | `10` | 1–60 秒，建立连接超时 |
-| `CHECK_TIMEOUT` | `90` | 1–180 秒，Worker 读取超时 |
-| `HTTP_TIMEOUT` | `30` | 1–120 秒，数据源读取超时 |
-| `CHECK_RETRIES` | `2` | 0–3，临时网络错误的额外尝试次数，也用于数据源 |
-| `RETRY_BACKOFF` | `1` | 0–30 秒，指数退避的起始等待时间；服务端 `Retry-After` 优先 |
-| `RUN_TIMEOUT` | `900` | 10–1500 秒，整轮抓取、检测和入口探测的进程级总时间预算 |
-| `MAX_CHECK_NODES` | `0` | 0–10000，最多检测的去重候选节点数；0 表示不限 |
-| `ALLOWED_COUNTRIES` | 空 | 保留的两位国家代码，如 `JP,US,KR`；空表示不限 |
-| `RESIDENTIAL_ONLY` | `false` | 只保留判断为住宅的 SSTP 节点 |
-| `MAX_LATENCY_MS` | `0` | 0–180000，SSTP 延迟上限；0 表示不限，启用后排除未知延迟 |
-| `MAX_PER_COUNTRY` | `0` | 0–10000，每个国家最多保留的 SSTP 节点数；0 表示不限 |
-| `PROBE_EDGES` | `true` | 对入口进行 TCP 连接探测，仅用于诊断报告，不删除或重排入口 |
-| `STALE_HOURS` | `6` | 1–720，距离上次成功检测并验证超过此时长，在运行摘要中提示可能过期 |
-
-国家、住宅和延迟筛选在检测后进行，每国数量限制在排序后应用。`MAX_CHECK_NODES` 则在检测前截取数据源顺序中的前 N 个去重节点。所有筛选仅影响 SSTP 行，Secrets 中的独立入口始终完整保留；若筛选后没有 SSTP 节点，仍不覆盖旧清单。
-
-### 3. 启用 Pages 并运行
+### 3. 开启 Pages 并运行一次
 
 1. 在 **Settings → Pages → Build and deployment → Source** 选择 **GitHub Actions**。
-2. 在 **Actions** 页面启用工作流；Fork 后需确认定时工作流已启用。
-3. 选择 **VPN Gate Node Check → Run workflow**，使用默认分支运行。
-4. 等待 `check` 作业完成后，访问 `https://你的用户名.github.io/你的仓库名/nodes.txt`，并查看运行摘要。
+2. 在 **Actions** 页面启用工作流，选择 **VPN Gate Node Check**。
+3. 点击 **Run workflow**，选择默认分支运行。
+4. 运行结束后，确认摘要显示 **“已部署且内容验证通过”** 或 **“内容相同，已验证并跳过部署”**。
+5. 打开 `https://你的用户名.github.io/你的仓库名/nodes.txt`。
 
-以当前仓库 `vvqc/gate_check` 为例，地址为 `https://vvqc.github.io/gate_check/nodes.txt`。项目没有首页，请直接打开 `/nodes.txt`。
-
-配置方法见 [Secrets 官方文档](https://docs.github.com/en/actions/how-tos/write-workflows/choose-what-workflows-do/use-secrets) 和 [Pages 官方文档](https://docs.github.com/en/pages/getting-started-with-github-pages/using-custom-workflows-with-github-pages)。
+本仓库的地址是 [vvqc.github.io/gate_check/nodes.txt](https://vvqc.github.io/gate_check/nodes.txt)。Fork 后请使用你自己仓库的地址。项目没有展示首页，直接访问 `/nodes.txt`。
 
 ### 4. 接入 edgetunnel
 
-将清单地址填入 edgetunnel 后台的「自定义优选IP」框并保存，之后刷新订阅即可使用更新后的节点。清单无注释头，先将 Secrets 中的全部 `EDGE_HOSTS` 各自单独写一行，再追加通过检测的 SSTP 节点行：
+把上述清单 URL 填入 edgetunnel 后台的 **「自定义优选IP」** 框，保存并刷新订阅，再在客户端验证节点连通性。
+
+**Tests 工作流通过，只表示代码检查通过；真实检测和发布要看 VPN Gate Node Check。** Worker 检测成功也只代表检测当时可用，不能保证下一次刷新前始终在线。
+
+## TXT 里有哪些内容？
+
+文件没有注释头，包含两类行：
 
 ```text
 a.example.com:443
 b.example.com:443
 a.example.com:443#日本-住宅-01$sstp://vpn:vpn@vpn12345.opengw.net:443
+b.example.com:443#韩国-未识别-01$sstp://vpn:vpn@vpn67890.opengw.net:443
 ```
 
-独立入口按配置顺序输出，清理空白并去重；即使 SSTP 节点数少于入口数，也会列出全部入口。SSTP 节点行中的入口继续按配置顺序轮换，住宅节点优先，同组按延迟排序。住宅／机房是根据 Worker 出口信息及主机名估算的；无法识别的节点单独标注“未识别”，不再归为机房。
+- **前面的独立入口行**：来自 `EDGE_HOSTS`，每个去重后的入口单独一行，按配置顺序完整保留。
+- **后面的 SSTP 行**：来自本轮检测通过且符合筛选条件的 VPN Gate 节点；入口从 `EDGE_HOSTS` 中轮换使用。
 
-## 失败与更新行为
+因此，**TXT 总行数 = 独立入口数 + 最终 SSTP 节点数**。增加 `EDGE_HOSTS` 会增加入口行，不会增加 VPN Gate 的 SSTP 节点数量。
 
-- 配置缺失或格式不正确：联网前报错，提示配置项名称，不打印配置值。
-- 官方源与镜像都失败、无 TCP 节点、Worker 全部异常或可用节点为零：工作流失败，不上传和部署新产物，保留上次发布的清单。
-- 部分节点通过检测：发布全部配置入口和可用的 SSTP 节点。没有可用 SSTP 节点时，不发布只有入口的清单，仍保留旧文件。首次运行失败时还没有旧清单，地址可能返回 404。
-- 旧清单保留不代表旧节点仍然可用。排查 Actions 中的失败原因、更新 Secrets 后，手动重新运行。
-- 修改 Secrets 会在下一次运行时生效，无需提交代码；推送和 PR 只运行离线测试，不触发节点发布。
+住宅节点优先，其后结合延迟排序。`住宅`、`机房`、`未识别` 是基于 Worker 出口信息和主机名的估算标签，不是严格的网络类型认证。入口地址和 SSTP 地址会随 TXT 公开；Secrets 用于保存配置，不会让公开清单中的入口保密。
 
-主源有记录但解析不出有效 SSTP 候选节点时，也会回退镜像。连接／读取超时、429 以及 500、502、503、504 会有限重试；鉴权错误、TLS 校验错误、格式错误和明确不可用的节点不会反复重试。超出总时间预算会终止整个检测子进程，工作流不进入发布步骤。
+## 节点为什么会少？
 
-## 发布验证与运行报告
+先看运行报告里的数字，定位节点在哪一步减少。不要只看 TXT 的总行数，也不要把 VPN Gate 网站显示的服务器总量当成最终 SSTP 数量。
 
-- 生成成功后，先读取线上 `nodes.txt` 比较完整内容；完全相同则跳过上传和部署，但记录本轮验证成功。
-- 内容变化或旧文件不可用时执行部署，之后最多进行 6 轮内容验证，轮次间等待 3 秒，并在总请求预算内处理临时错误。若始终不一致或无法读取，任务标记失败。
-- “检测失败未发布”和“已经部署但验证失败”会分开记录。后者不代表站点自动回滚，需要查看报告排查。
-- Actions 运行摘要包含数据源、候选／已检测／可用／筛选后数量、国家与网络类型分布、耗时、重试及失败分类、入口 TCP 探测结果。
-- 入口探测仅反映 Actions 服务器的 TCP 连通性，不代表你的本地网络或完整代理链路可用；入口在报告中用序号显示，对应配置中的顺序。
-- `gate-report-运行ID-尝试次数` 产物保存 `run.json` 和 `summary.md`，保留 90 天。下次运行从此前报告恢复最后成功验证时间、最后部署时间和连续失败次数；历史缺失或读取失败会明确标注“未知”，不会冒充零次失败。
-- 未改变内容的成功运行会更新“成功验证时间”，不会更新“最后部署时间”。超过 `STALE_HOURS` 后在摘要提示过期，不自动清空你保留的旧清单。
+| 字段 | 表示什么 | 数量减少的常见位置 |
+| --- | --- | --- |
+| `raw_nodes` | 本次数据源返回并解析出的原始记录数 | 本次数据源本身只返回了这些记录 |
+| `candidates` | 解析、去重并应用检测数量上限后的候选数 | 非 TCP 配置、配置或地址无效、重复记录、`MAX_CHECK_NODES` 限制 |
+| `checked` | 已完成检测的候选数 | 若少于候选数，检查是否耗尽总时间预算或任务被中断 |
+| `available` | Worker 返回 `success: true` 的数量 | 其余节点被判为不可用，或遇到了请求／响应错误 |
+| `selected` | 应用筛选后实际写入 TXT 的 SSTP 数量 | 国家、住宅类型、延迟、每国数量筛选 |
+| `edge_count` | 去重后的独立入口数 | 来自你的配置，与 VPN Gate 检测通过数分开计算 |
 
-工作流只从默认分支发布。GitHub 公开仓库长期无活动时可能停用定时任务；如果运行记录不再新增，请在 Actions 页面检查并重新启用。报告本身不额外发送邮件或聊天通知。
+**当前实现如何找候选？** 它从数据源提供的 OpenVPN 配置中解析 TCP 条目及端口，再交给 Worker 验证 SSTP。它不是直接复制 VPN Gate 全站节点，也不承诺覆盖全站所有 SSTP 入口。主源无法提供有效候选时才回退镜像；当前不会把两个数据源合并扩充。
 
-## 仅在 GitHub Actions 运行
+**默认有没有限制数量？** 没有。未配置 Variables 时，不限制检测数量、不限制国家、不只保留住宅、不设置延迟上限，也不限制每国数量。例如 `available = 44`、`selected = 44` 就表示通过检测的 44 个节点全部写入了清单。
 
-本项目的依赖安装、测试、工具校验和节点检测均在 GitHub Actions 中完成。本地只编辑源文件和执行 Git 操作，不安装项目依赖、不创建 `.venv/` 或 `.tools/`，也不运行节点检测。
+**`node_unavailable` 是什么？** 表示 Worker 正常返回了 `success: false`，不是被筛选变量删除。报告目前不保留 Worker 的原始错误文本，因此仅凭这个计数不能判断具体是节点端口、协议、认证还是网络问题。
 
-- 推送代码或创建 PR 后，**Tests** 工作流自动执行 Ruff 检查、Python 3.11／3.14 测试和 actionlint 工作流校验；也可在 Actions 页面手动触发。
-- 测试使用模拟网络响应，不需要 Secrets 或外部服务。
-- 真实检测由 **VPN Gate Node Check** 工作流执行，读取仓库 Secrets 和 Variables；运行产物与诊断报告均保存在 GitHub。
-- `requirements.txt` 保留锁定的运行依赖；`requirements-dev.txt` 只额外包含 CI 使用的 Ruff。actionlint 在 GitHub runner 上下载固定版本并校验 SHA-256。
+**怎样查看完整报告？** 打开对应的 **VPN Gate Node Check** 运行页面查看摘要；需要 `raw_nodes` 等完整字段时，下载下方名为 `gate-report-运行ID-尝试次数` 的 artifact，查看 `run.json` 或 `summary.md`。
 
-代码使用 4 空格缩进和 `snake_case` 函数名，`.editorconfig` 统一 UTF-8、LF 换行和缩进。Actions 固定提交 SHA，Dependabot 每周提出依赖更新 PR。本地提交前可运行 `git diff --check` 检查空白问题，无需安装工具。
+## 可选配置：筛选与运行参数
 
-首次真实验收时，先运行一次默认分支工作流，确认报告中的“已部署且内容验证通过”；然后在 edgetunnel 刷新订阅，分别检查独立入口和 SSTP 节点能否实际使用。离线格式校验不能替代客户端连通性测试。
+进入 **Settings → Secrets and variables → Actions → Variables** 添加。全部可留空使用默认值，日常运行只配置前面的两个必填 Secrets 即可。
 
-## 项目结构
+### 影响节点数量的参数
 
-```text
-vpngate.py               抓取、检测、筛选、清单生成和总时间预算
-gate_config.py           环境配置及校验
-gate_data.py             国家名称及网络分类关键词
-gate_http.py             请求重试、超时与线程连接池
-gate_report.py           运行报告与 Actions 摘要
-gate_delivery.py         内容比较、发布验证与历史状态恢复
-tests/                  离线单元测试与流水线测试
-scripts/                固定版本的检查工具安装
-.github/                发布、测试和 Dependabot 配置
-requirements*.txt        已锁定的运行与开发依赖
-public/nodes.txt         公开运行产物，不提交到 Git
-reports/                诊断产物，不发布到 Pages、不提交到 Git
-```
+| Variable | 默认值 | 作用 |
+| --- | --- | --- |
+| `MAX_CHECK_NODES` | `0` | 最多检测多少个去重候选；0 表示不限，允许 0–10000 |
+| `ALLOWED_COUNTRIES` | 空 | 只保留指定国家代码，例如 `JP,KR,US`；空表示不限 |
+| `RESIDENTIAL_ONLY` | `false` | 设为 `true` 后只保留判断为住宅的 SSTP 节点 |
+| `MAX_LATENCY_MS` | `0` | 延迟上限，单位毫秒；0 表示不限，允许 0–180000；启用后会排除未知延迟 |
+| `MAX_PER_COUNTRY` | `0` | 每个国家最多保留多少个 SSTP 节点；0 表示不限，允许 0–10000 |
 
-## 参考与致谢
+`MAX_CHECK_NODES` 在检测前按数据源顺序截取。其余筛选在检测后应用，每国数量限制在排序后应用。筛选只影响 SSTP 行，独立入口仍完整保留；但如果筛选后没有任何 SSTP 节点，整轮不会发布新文件。
 
-- [hezhanleiok/gate](https://github.com/hezhanleiok/gate)：参考抓取、分类和 edgetunnel 清单格式。
+### 请求、时间预算与诊断
+
+| Variable | 默认值 | 作用与范围 |
+| --- | --- | --- |
+| `CHECK_CONCURRENCY` | `32` | 并发检测数，1–64 |
+| `CONNECT_TIMEOUT` | `10` | 建立连接超时，1–60 秒 |
+| `CHECK_TIMEOUT` | `90` | Worker 读取超时，1–180 秒 |
+| `HTTP_TIMEOUT` | `30` | 数据源读取超时，1–120 秒 |
+| `CHECK_RETRIES` | `2` | 临时请求错误的额外尝试次数，0–3，也用于数据源 |
+| `RETRY_BACKOFF` | `1` | 指数退避的起始等待时间，0–30 秒；服务端 `Retry-After` 优先 |
+| `RUN_TIMEOUT` | `900` | 整轮抓取、检测和入口探测的总时间预算，10–1500 秒 |
+| `PROBE_EDGES` | `true` | 是否对入口做 TCP 探测，只出报告，不删减或重排入口 |
+| `STALE_HOURS` | `6` | 距上次成功检测并验证超过多少小时提示可能过期，1–720 |
+
+重试只针对连接／读取超时、429，以及 500、502、503、504 等临时错误。Worker 明确返回不可用、鉴权错误、TLS 校验错误和响应格式错误不会被反复重试。单纯提高重试或并发，不能保证节点更多。
+
+入口探测反映的是 **Actions 服务器到入口的 TCP 连通性**，不代表你的本地网络或完整代理链路可用。报告中的入口序号对应配置顺序。
+
+## 自动更新与失败处理
+
+- **定时**：每两小时的第 17 分钟运行一次，cron 为 `17 */2 * * *`，按 UTC 解释；GitHub 调度可能延迟。
+- **手动**：修改 Secrets 或 Variables 后，可直接 Run workflow，无需提交代码。发布仅允许默认分支。
+- **内容未变**：比较线上 TXT 后跳过上传、部署，仍记录本轮验证成功。
+- **内容变化**：部署后再次核对线上文件，最多进行 6 轮验证，轮次间等待 3 秒，并受请求预算约束。
+- **检测失败或无可用 SSTP**：不发布新文件，保留上次清单；也不会改成只发布独立入口。
+- **已经部署但验证失败**：任务标记失败，报告会明确区分；这不代表站点自动回滚。
+
+保留旧文件不代表其中节点仍然在线。报告记录最后成功验证时间、最后部署时间和连续失败次数；超过 `STALE_HOURS` 后提示可能过期。内容未变的成功运行只更新验证时间，不更新部署时间。
+
+报告保留 90 天。历史报告缺失或读取失败时，时间和失败次数会标为未知，不会伪装成零次失败。若长期没有新增运行记录，应检查工作流是否被 GitHub 停用。
+
+## 常见排查
+
+| 现象 | 先检查 |
+| --- | --- |
+| 缺少配置、域名格式错误 | 核心配置是否放在 **Secrets**；`WORKER_DOMAIN` 是否只填域名 |
+| `Pages 配置` 失败 | Settings → Pages 的 Source 是否选择 **GitHub Actions** |
+| 大量 `node_unavailable` | Worker 正常响应，但判定节点不可用；与国家／数量筛选是两回事 |
+| 大量 `http_429`、连接或读取超时 | 查看错误分类与重试统计，再评估并发、Worker 状态和网络情况 |
+| `available` 明显大于 `selected` | 检查国家、住宅、延迟及每国数量筛选 |
+| TXT 没更新 | 看最后一次节点检测运行是否成功、是否内容相同而跳过部署、是否仍在使用旧清单 |
+| 客户端数量与 TXT 不同 | 先确认实际订阅的 URL，再检查 edgetunnel 的解析、去重和订阅设置；TXT 的入口行不等于 SSTP 节点 |
+
+## 维护方式
+
+本项目只在 GitHub Actions 中安装依赖、运行测试和检测。本地仅编辑源码和执行 Git 操作，不创建虚拟环境、不下载检查工具。
+
+推送或 PR 会自动触发 **Tests**：检查 Python 3.11／3.14、Ruff 和 actionlint。运行依赖已锁定版本，Actions 固定提交 SHA，Dependabot 每周提出更新 PR。
+
+主要代码：`vpngate.py` 负责检测和生成，`gate_config.py` 负责配置，`gate_http.py` 负责请求，`gate_report.py` 负责报告，`gate_delivery.py` 负责历史恢复、内容比较和发布验证。公开产物为 `public/nodes.txt`；`reports/` 仅用于 Actions 报告，不发布到 Pages。
+
+## 参考项目
+
+- [hezhanleiok/gate](https://github.com/hezhanleiok/gate)：参考实现与节点格式。
 - [VPN Gate](https://www.vpngate.net/)：节点数据源。
-- [fdciabdul/Vpngate-Scraper-API](https://github.com/fdciabdul/Vpngate-Scraper-API)：备用节点数据源。
-- [lsh8848/cm-Workers-CheckSocks5](https://github.com/lsh8848/cm-Workers-CheckSocks5)：检测 Worker。
-- [cmliu/edgetunnel](https://github.com/cmliu/edgetunnel)：节点清单使用端。
+- [Vpngate-Scraper-API](https://github.com/fdciabdul/Vpngate-Scraper-API)：备用数据源。
+- [cm-Workers-CheckSocks5](https://github.com/lsh8848/cm-Workers-CheckSocks5)：检测 Worker。
+- [cmliu/edgetunnel](https://github.com/cmliu/edgetunnel)：清单使用端。
