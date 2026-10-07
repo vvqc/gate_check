@@ -115,38 +115,16 @@ a.example.com:443#日本-住宅-01$sstp://vpn:vpn@vpn12345.opengw.net:443
 
 工作流只从默认分支发布。GitHub 公开仓库长期无活动时可能停用定时任务；如果运行记录不再新增，请在 Actions 页面检查并重新启用。报告本身不额外发送邮件或聊天通知。
 
-## 本地开发与测试
+## 仅在 GitHub Actions 运行
 
-使用 Python 3.11 或更高版本：
+本项目的依赖安装、测试、工具校验和节点检测均在 GitHub Actions 中完成。本地只编辑源文件和执行 Git 操作，不安装项目依赖、不创建 `.venv/` 或 `.tools/`，也不运行节点检测。
 
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-python -m pip install -r requirements-dev.txt
-ruff check .
-ruff format --check .
-python -m unittest discover -s tests -v
-python scripts/install_actionlint.py
-.tools/actionlint
-```
+- 推送代码或创建 PR 后，**Tests** 工作流自动执行 Ruff 检查、Python 3.11／3.14 测试和 actionlint 工作流校验；也可在 Actions 页面手动触发。
+- 测试使用模拟网络响应，不需要 Secrets 或外部服务。
+- 真实检测由 **VPN Gate Node Check** 工作流执行，读取仓库 Secrets 和 Variables；运行产物与诊断报告均保存在 GitHub。
+- `requirements.txt` 保留锁定的运行依赖；`requirements-dev.txt` 只额外包含 CI 使用的 Ruff。actionlint 在 GitHub runner 上下载固定版本并校验 SHA-256。
 
-代码使用 4 空格缩进、`snake_case` 函数名；`.editorconfig` 统一 UTF-8、LF 换行和缩进，Ruff 负责格式和静态检查。`install_actionlint.py` 支持 Linux x86_64/arm64，下载固定版本并校验 SHA-256。CI 在 Python 3.11 和 3.14 上运行测试，并单独检查工作流。
-
-运行依赖及间接依赖已固定版本，Actions 固定提交 SHA；Dependabot 每周提出依赖更新 PR。提交前运行上述检查，并用 `git diff --check` 检查空白问题。
-
-测试使用模拟网络响应，不需要 Secrets 或外部服务。实际生成清单前，在当前终端设置环境变量：
-
-```bash
-export EDGE_HOSTS='a.example.com:443,b.example.com:443'
-export WORKER_DOMAIN='check.example.com'
-export GITHUB_REPOSITORY='your-name/your-repo'
-# 可选；省略时使用 GITHUB_REPOSITORY 中的所有者
-export NODES_GITHUB_USERNAME='your-name'
-python vpngate.py --check-config
-python vpngate.py
-```
-
-将示例配置替换为真实值。`--check-config` 只校验配置，不联网。成功后公开目录只生成 `public/nodes.txt`，本地诊断报告写入 `reports/`；本地运行不部署 Pages。脚本直接读取环境变量，不自动加载 `.env` 文件。产物、虚拟环境、工具缓存和 `.env` 文件均不提交到 Git。
+代码使用 4 空格缩进和 `snake_case` 函数名，`.editorconfig` 统一 UTF-8、LF 换行和缩进。Actions 固定提交 SHA，Dependabot 每周提出依赖更新 PR。本地提交前可运行 `git diff --check` 检查空白问题，无需安装工具。
 
 首次真实验收时，先运行一次默认分支工作流，确认报告中的“已部署且内容验证通过”；然后在 edgetunnel 刷新订阅，分别检查独立入口和 SSTP 节点能否实际使用。离线格式校验不能替代客户端连通性测试。
 
